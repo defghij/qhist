@@ -8,11 +8,11 @@ use hdrhistogram::Histogram;
 #[structopt(name = "qhist", about = "description")]
 struct Opt {
     /// Input file to read
-    #[structopt(short,long)]
-    input: PathBuf,
+    #[structopt(short, long, parse(from_os_str))]
+    input: Option<PathBuf>,
 
     /// Column of input data which should be operated on.
-    #[structopt(short, long)]
+    #[structopt(short, long, default_value="0")]
     column: usize,
 
     /// Lower bound on displayed percentile
@@ -29,11 +29,27 @@ struct Opt {
 
     /// Resolution of percentile display.
     #[structopt(short, long, default_value="1")]
-    resolution: u64
+    resolution: u64,
+}
+
+fn read_data_from<R: BufRead>(reader: R, column: usize) -> Vec<u64> {
+    let lines: Vec<u64> = reader
+        .lines()
+        .map(|line| {
+            let l = line.unwrap();
+            let l: Vec<&str> = l.split_ascii_whitespace().collect();
+            if l.len() <= column {
+                panic!("Error! Given column does not exist in data for line:\n---\n{0}\n----", l.clone()[0]);
+            }
+            l[column].to_owned().parse::<u64>().expect(
+                format!("Value ({0:#?}) at column {1} was not parsable to an integer!", l[column], column).as_ref())
+    }).collect();
+    lines
 
 }
 
 fn main() -> Result<(), std::io::Error> {
+
 
     // Set options
     let args: Opt = Opt::from_args();
@@ -42,21 +58,18 @@ fn main() -> Result<(), std::io::Error> {
         panic!("Lower percentile bound is greater than upper percentile bound");
     }
 
-
     // Read in data
-    let file:File = File::open(args.input).expect("file not found");
+    let lines: Vec<u64>;
+    if args.input == None {
+        let stdin = std::io::stdin();
+        let stdin = stdin.lock();
+        lines = read_data_from(stdin, args.column);
+    } else {
+        let file:File = File::open(args.input.unwrap()).expect("file not found");
+        let file = io::BufReader::new(file);
+        lines = read_data_from(file, args.column);
 
-    let lines: Vec<u64> = io::BufReader::new(file)
-        .lines()
-        .map(|line| {
-            let l = line.unwrap();
-            let l: Vec<&str> = l.split(" ").collect();
-            if l.len() <= args.column {
-                panic!("Error! Given column does not exist in data for line:\n---\n{0}\n----", l.clone()[0]);
-            }
-            l[args.column].to_owned().parse::<u64>().expect("Value was not parsable to an integer")
-    }).collect();
-
+    }
 
     // Populate histogram
     let mut hist = Histogram::<u64>::new(3).expect("Unable to create histogram");
