@@ -5,7 +5,7 @@ use structopt::StructOpt;
 use hdrhistogram::Histogram;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "qhist", about = "description")]
+#[structopt(name = "qhist", about = "Simple historgraphic information")]
 struct Opt {
     /// Input file to read
     #[structopt(short, long, parse(from_os_str))]
@@ -30,6 +30,14 @@ struct Opt {
     /// Resolution of percentile display.
     #[structopt(short, long, default_value="1")]
     resolution: u64,
+
+    /// Do not print info simple info block
+    #[structopt(long)]
+    no_info: bool,
+
+    /// Do not print percentiles
+    #[structopt(long)]
+    no_percentiles: bool,
 }
 
 
@@ -67,14 +75,18 @@ fn main() -> Result<(), std::io::Error> {
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
 
-    write_info_to(&mut stdout, &hist)?;
+    if !args.no_info {
+        write_info_to(&mut stdout, &hist)?;
+    }
 
-    let percentiles = construct_percentiles(&hist, 
-        args.resolution,
-        args.upper, 
-        args.lower);
+    if !args.no_percentiles {
+        let percentiles = construct_percentiles(&hist, 
+            args.resolution,
+            args.upper, 
+            args.lower);
 
-    write_percentiles_to(&mut stdout, &percentiles, args.max_lines)?;
+        write_percentiles_to(&mut stdout, &percentiles, args.max_lines)?;
+    }
     
     Ok(())
 }
@@ -109,7 +121,6 @@ fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>)
             hist.stdev()).as_ref()
     )?;
 
-
     if (hist.mean() + 3. * hist.stdev()) <= hist.max() as f64{
         writer.write_all(format!("Outlier(s) >= {0: >10.2}",
             hist.mean() + 3. * hist.stdev()
@@ -124,9 +135,9 @@ fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>)
 }
 
 fn construct_percentiles(hist: &Histogram<u64>,
-               resolution: u64,
-               upper_bound: u64,
-               lower_bound: u64) 
+                         resolution: u64,
+                         upper_bound: u64,
+                         lower_bound: u64) 
 -> Vec<String> {
 
     let mut out: Vec<String> = Vec::new();
@@ -142,8 +153,8 @@ fn construct_percentiles(hist: &Histogram<u64>,
 }
 
 fn write_percentiles_to<W: Write>(writer: &mut W,
-                               percentiles: &Vec<String>, 
-                               max_lines: usize)
+                                 percentiles: &Vec<String>, 
+                                 max_lines: usize)
 -> Result<(), std::io::Error> {
     writer.write_all(format!("Percentile  value      count\n").as_ref())?;
     let line_count = if percentiles.len() < max_lines { percentiles.len() } else { max_lines };
