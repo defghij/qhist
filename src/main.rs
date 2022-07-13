@@ -32,24 +32,8 @@ struct Opt {
     resolution: u64,
 }
 
-fn read_data_from<R: BufRead>(reader: R, column: usize) -> Vec<u64> {
-    let lines: Vec<u64> = reader
-        .lines()
-        .map(|line| {
-            let l = line.unwrap();
-            let l: Vec<&str> = l.split_ascii_whitespace().collect();
-            if l.len() <= column {
-                panic!("Error! Given column does not exist in data for line:\n---\n{0}\n----", l.clone()[0]);
-            }
-            l[column].to_owned().parse::<u64>().expect(
-                format!("Value ({0:#?}) at column {1} was not parsable to an integer!", l[column], column).as_ref())
-    }).collect();
-    lines
-
-}
 
 fn main() -> Result<(), std::io::Error> {
-
 
     // Set options
     let args: Opt = Opt::from_args();
@@ -82,20 +66,35 @@ fn main() -> Result<(), std::io::Error> {
     // Print out the information
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
-    write_header(&hist, &mut stdout)?;
 
+    write_info_to(&mut stdout, &hist)?;
 
     let percentiles = construct_percentiles(&hist, 
         args.resolution,
         args.upper, 
         args.lower);
 
-    write_percentiles(&percentiles, args.max_lines, &mut stdout)?;
+    write_percentiles_to(&mut stdout, &percentiles, args.max_lines)?;
     
     Ok(())
 }
 
-fn write_header<W: Write>(hist: &Histogram<u64>, writer: &mut W)
+fn read_data_from<R: BufRead>(reader: R, column: usize) -> Vec<u64> {
+    let lines: Vec<u64> = reader
+        .lines()
+        .map(|line| {
+            let l = line.unwrap();
+            let l: Vec<&str> = l.split_ascii_whitespace().collect();
+            if l.len() <= column {
+                panic!("Error! Given column does not exist in data for line:\n---\n{0}\n----", l.clone()[0]);
+            }
+            l[column].to_owned().parse::<u64>().expect(
+                format!("Value ({0:#?}) at column {1} was not parsable to an integer!", l[column], column).as_ref())
+    }).collect();
+    lines
+}
+
+fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>)
 -> Result<(), std::io::Error> {
     writer.write_all(format!(
             "Samples: {0: >7}\n\
@@ -133,22 +132,20 @@ fn construct_percentiles(hist: &Histogram<u64>,
     let mut out: Vec<String> = Vec::new();
     for v in hist.iter_linear(resolution) {
         if lower_bound as f64 <= v.percentile() &&
-           v.percentile() <= upper_bound as f64 && 
-           v.count_at_value() != 0 {
+           v.percentile() <= upper_bound as f64  {
             out.push(format!("{: >6.2} {: >10} {: >10}",
-                v.percentile(),v.count_at_value(), v.value_iterated_to()));
+                v.percentile(), v.value_iterated_to(), v.count_since_last_iteration()));
         }
     } 
-
     out.reverse();
     out
 }
 
-fn write_percentiles<W: Write>(percentiles: &Vec<String>, 
-                               max_lines: usize,
-                               writer: &mut W)
+fn write_percentiles_to<W: Write>(writer: &mut W,
+                               percentiles: &Vec<String>, 
+                               max_lines: usize)
 -> Result<(), std::io::Error> {
-    writer.write_all(format!("Percentile  count      value\n").as_ref())?;
+    writer.write_all(format!("Percentile  value      count\n").as_ref())?;
     let line_count = if percentiles.len() < max_lines { percentiles.len() } else { max_lines };
     for l in percentiles[0..line_count].iter() {
         writer.write_all(format!("{}\n", l).as_ref())?;
