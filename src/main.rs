@@ -1,6 +1,7 @@
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::fs::File;
+use hdrhistogram::iterators::{PickyIterator, HistogramIterator};
 use structopt::StructOpt;
 use hdrhistogram::Histogram;
 
@@ -28,8 +29,8 @@ struct Opt {
     max_lines: usize,
 
     /// Resolution of percentile display.
-    #[structopt(short, long, default_value="1")]
-    resolution: u64,
+    #[structopt(short, long)]
+    resolution: Option<u64>,
 
     /// Do not print info simple info block
     #[structopt(long)]
@@ -80,10 +81,21 @@ fn main() -> Result<(), std::io::Error> {
     }
 
     if !args.no_percentiles {
-        let percentiles = construct_percentiles(&hist, 
-            args.resolution,
-            args.upper, 
-            args.lower);
+        let scaling: f64 = 1. / 9.;
+        let percentiles = match args.resolution {
+            Some(resolution) => {
+                construct_percentiles(&mut hist.iter_linear(resolution), 
+                                       args.upper, 
+                                       args.lower,
+                                        scaling)
+            }
+            None => {
+                construct_percentiles(&mut hist.iter_recorded(), 
+                                       args.upper, 
+                                       args.lower,
+                                        scaling)
+            }
+        };
 
         write_percentiles_to(&mut stdout, &percentiles, args.max_lines)?;
     }
@@ -122,7 +134,7 @@ fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>)
     )?;
 
     if (hist.mean() + 3. * hist.stdev()) <= hist.max() as f64{
-        writer.write_all(format!("Outlier(s) >= {0: >10.2}",
+        writer.write_all(format!("Outlier(s) >= {0: >10.2}\n",
             hist.mean() + 3. * hist.stdev()
         ).as_ref())?;
     }
@@ -134,18 +146,23 @@ fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>)
     Ok(())
 }
 
-fn construct_percentiles(hist: &Histogram<u64>,
-                         resolution: u64,
+fn construct_percentiles<I: PickyIterator<u64>>(hist: &mut HistogramIterator<u64,I>,
                          upper_bound: u64,
-                         lower_bound: u64) 
+                         lower_bound: u64,
+                         scaling: f64) 
 -> Vec<String> {
 
     let mut out: Vec<String> = Vec::new();
-    for v in hist.iter_linear(resolution) {
+    //for v in hist.iter_linear(resolution) {
+    for v in hist {
         if lower_bound as f64 <= v.percentile() &&
+           v.count_since_last_iteration() != 0 && 
            v.percentile() <= upper_bound as f64  {
-            out.push(format!("{: >6.2} {: >10} {: >10}",
-                v.percentile(), v.value_iterated_to(), v.count_since_last_iteration()));
+            let bar = "+".repeat( (v.count_since_last_iteration() as f64 * scaling) as usize);
+            out.push(format!("{: >6.2} {: >10} {: >10} {}",
+                v.percentile(),
+                v.value_iterated_to(), 
+                v.count_since_last_iteration(), bar));
         }
     } 
     out.reverse();
@@ -156,7 +173,7 @@ fn write_percentiles_to<W: Write>(writer: &mut W,
                                  percentiles: &Vec<String>, 
                                  max_lines: usize)
 -> Result<(), std::io::Error> {
-    writer.write_all(format!("Percentile  value      count\n").as_ref())?;
+    writer.write_all(format!("Percentile  bucket      count\n").as_ref())?;
     let line_count = if percentiles.len() < max_lines { percentiles.len() } else { max_lines };
     for l in percentiles[0..line_count].iter() {
         writer.write_all(format!("{}\n", l).as_ref())?;
