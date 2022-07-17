@@ -64,6 +64,16 @@ struct Opt {
     /// this occurs use smaller values for `--bar-length`
     #[structopt(short, long, default_value = "100")]
     bar_length: f64,
+
+    /// Number of decimal places of to keep for floating point input. Will garble integer input. 
+    /// 
+    /// This is used to convert the input from floating point into an integer to be operated on.
+    /// Then used to convert back to a floating point for output. An input of `1.13` with `-s 2` 
+    /// will be converted to `1.13 * 10^2 = 113` and processed. When output it will be reconverted
+    /// to `113 * 10^2 = 1.13`. This is because the underlying library for creating the histogram
+    /// does not suppor floating point values.
+    #[structopt(short, long)]
+    sig_figs: Option<f64>,
 }
 
 fn main() -> Result<(), std::io::Error> {
@@ -90,11 +100,11 @@ fn main() -> Result<(), std::io::Error> {
     if args.input == None {
         let stdin = std::io::stdin();
         let stdin = stdin.lock();
-        lines = read_data_from(stdin, args.column);
+        lines = read_data_from(stdin, args.column, args.sig_figs);
     } else {
         let file: File = File::open(args.input.unwrap()).expect("file not found");
         let file = io::BufReader::new(file);
-        lines = read_data_from(file, args.column);
+        lines = read_data_from(file, args.column, args.sig_figs);
     }
 
     // Populate histogram
@@ -129,6 +139,7 @@ fn main() -> Result<(), std::io::Error> {
                 max_count,
                 min_count,
                 bar_length,
+                args.sig_figs
             ),
             None => construct_percentiles(
                 &mut hist.iter_recorded(),
@@ -137,17 +148,22 @@ fn main() -> Result<(), std::io::Error> {
                 max_count,
                 min_count,
                 bar_length,
+                args.sig_figs
             ),
         };
 
-        write_percentiles_to(&mut stdout, &percentiles, args.max_lines, args.no_info)?;
+        write_percentiles_to(&mut stdout,
+            &percentiles,
+            args.max_lines,
+            args.no_info,
+        )?;
     }
 
     Ok(())
 }
 
 /// Returns a vector containing the data pointed to by column and reader.
-fn read_data_from<R: BufRead>(reader: R, column: usize) -> Vec<u64> {
+fn read_data_from<R: BufRead>(reader: R, column: usize, sig_figs: Option<f64>) -> Vec<u64> {
     let lines: Vec<u64> = reader
         .lines()
         .map(|line| {
@@ -159,13 +175,30 @@ fn read_data_from<R: BufRead>(reader: R, column: usize) -> Vec<u64> {
                     l.clone()[0]
                 );
             }
-            l[column].to_owned().parse::<u64>().expect(
-                format!(
-                    "Value ({0:#?}) at column {1} was not parsable to an integer!",
-                    l[column], column
-                )
-                .as_ref(),
-            )
+            match sig_figs {
+                Some(s) => {
+                    // We have requested some number of significant figures, s, be maintained.
+                    // This also assumes floating point input, c, was given.
+                    // So the converted value c = (l[column] * 10 ^ s) as u64
+                    let a: f64 = l[column].to_owned().parse::<f64>().expect(
+                        format!(
+                            "Value ({0:#?}) at column {1} was not parsable to a float!",
+                            l[column], column
+                        )
+                        .as_ref()
+                    ) as f64;
+                    (a * f64::powf(10., s)) as u64
+                },
+                None => {
+                    l[column].to_owned().parse::<u64>().expect(
+                        format!(
+                            "Value ({0:#?}) at column {1} was not parsable to an integer!",
+                            l[column], column
+                        )
+                        .as_ref(),
+                    )
+                }
+            }
         })
         .collect();
     lines
@@ -219,6 +252,7 @@ fn construct_percentiles<I: PickyIterator<u64>>(
     max: u64,
     min: u64,
     bar_length: f64,
+    sig_figs: Option<f64>
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     //for v in hist.iter_linear(resolution) {
@@ -227,10 +261,22 @@ fn construct_percentiles<I: PickyIterator<u64>>(
             && v.count_since_last_iteration() != 0
             && v.percentile() <= upper_bound as f64
         {
+            let deci_places: usize = match sig_figs {
+                Some(s) => s as usize,
+                None => 0,
+            };
+
             out.push(format!(
-                "{: >6.2} {: >10} {: >10} {}",
+                "{1: >6.2} {2: >10.0$} {3: >10} {4}",
+                deci_places,
                 v.percentile(),
-                v.value_iterated_to(),
+                match sig_figs {
+                    Some(s) => {
+                        let a: f64 = v.value_iterated_to() as f64;
+                        a / f64::powf(10., s)
+                    },
+                    None => v.value_iterated_to() as f64,
+                },
                 v.count_since_last_iteration(),
                 bar_string(v.count_since_last_iteration(), max, min, bar_length)
             ));
