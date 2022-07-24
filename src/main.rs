@@ -76,6 +76,18 @@ struct Opt {
     sig_figs: Option<f64>,
 }
 
+struct App {
+    column: usize,
+    upper: u64,
+    lower: u64,
+    max_count: u64,
+    min_count: u64,
+    max_lines: usize,
+    no_info: bool,
+    bar_length: f64,
+    sig_figs: Option<f64>
+}
+
 fn main() -> Result<(), std::io::Error> {
     // Get options
     let args: Opt = Opt::from_args();
@@ -95,30 +107,40 @@ fn main() -> Result<(), std::io::Error> {
         false => args.bar_length,
     };
 
+    let mut app: App = App {
+        column: args.column,
+        upper: args.upper,
+        lower: args.lower, 
+        max_count: u64::MIN, 
+        min_count: u64::MAX, 
+        max_lines: args.max_lines, 
+        no_info: args.no_info,
+        bar_length: bar_length, 
+        sig_figs: args.sig_figs 
+    };
+
     // Read in data
     let lines: Vec<u64>;
     if args.input == None {
         let stdin = std::io::stdin();
         let stdin = stdin.lock();
-        lines = read_data_from(stdin, args.column, args.sig_figs);
+        lines = read_data_from(stdin, &app);
     } else {
         let file: File = File::open(args.input.unwrap()).expect("file not found");
         let file = io::BufReader::new(file);
-        lines = read_data_from(file, args.column, args.sig_figs);
+        lines = read_data_from(file, &app);
     }
 
     // Populate histogram
-    let mut max_count: u64 = u64::MIN;
-    let mut min_count: u64 = u64::MAX;
     let mut hist = Histogram::<u64>::new(3).expect("Unable to create histogram");
 
     for val in lines.iter() {
         hist.record(*val)
             .expect("Value added to histogram is out of range");
-        if hist.count_at(*val) > max_count {
-            max_count = hist.count_at(*val);
-        } else if hist.count_at(*val) < min_count {
-            min_count = hist.count_at(*val);
+        if hist.count_at(*val) > app.max_count {
+            app.max_count = hist.count_at(*val);
+        } else if hist.count_at(*val) < app.min_count {
+            app.min_count = hist.count_at(*val);
         }
     }
 
@@ -127,35 +149,21 @@ fn main() -> Result<(), std::io::Error> {
     let mut stdout = stdout.lock();
 
     if !args.no_info {
-        write_info_to(&mut stdout, &hist)?;
+        write_info_to(&mut stdout, &hist, app.sig_figs)?;
     }
 
     if !args.no_percentiles {
         let percentiles = match args.resolution {
             Some(resolution) => construct_percentiles(
-                &mut hist.iter_linear(resolution),
-                args.upper,
-                args.lower,
-                max_count,
-                min_count,
-                bar_length,
-                args.sig_figs
-            ),
+                &mut hist.iter_linear(resolution), &app),
             None => construct_percentiles(
-                &mut hist.iter_recorded(),
-                args.upper,
-                args.lower,
-                max_count,
-                min_count,
-                bar_length,
-                args.sig_figs
-            ),
+                &mut hist.iter_recorded(), &app),
         };
 
         write_percentiles_to(&mut stdout,
             &percentiles,
-            args.max_lines,
-            args.no_info,
+            app.max_lines,
+            app.no_info,
         )?;
     }
 
@@ -163,37 +171,37 @@ fn main() -> Result<(), std::io::Error> {
 }
 
 /// Returns a vector containing the data pointed to by column and reader.
-fn read_data_from<R: BufRead>(reader: R, column: usize, sig_figs: Option<f64>) -> Vec<u64> {
+fn read_data_from<R: BufRead>(reader: R, app: &App) -> Vec<u64> {
     let lines: Vec<u64> = reader
         .lines()
         .map(|line| {
             let l = line.unwrap();
             let l: Vec<&str> = l.split_ascii_whitespace().collect();
-            if l.len() <= column {
+            if l.len() <= app.column {
                 panic!(
                     "Error! Given column does not exist in data for line:\n---\n{0}\n----",
                     l.clone()[0]
                 );
             }
-            match sig_figs {
+            match app.sig_figs {
                 Some(s) => {
                     // We have requested some number of significant figures, s, be maintained.
                     // This also assumes floating point input, c, was given.
                     // So the converted value c = (l[column] * 10 ^ s) as u64
-                    let a: f64 = l[column].to_owned().parse::<f64>().expect(
+                    let a: f64 = l[app.column].to_owned().parse::<f64>().expect(
                         format!(
                             "Value ({0:#?}) at column {1} was not parsable to a float!",
-                            l[column], column
+                            l[app.column], app.column
                         )
                         .as_ref()
                     ) as f64;
                     (a * f64::powf(10., s)) as u64
                 },
                 None => {
-                    l[column].to_owned().parse::<u64>().expect(
+                    l[app.column].to_owned().parse::<u64>().expect(
                         format!(
                             "Value ({0:#?}) at column {1} was not parsable to an integer!",
-                            l[column], column
+                            l[app.column], app.column
                         )
                         .as_ref(),
                     )
@@ -204,38 +212,52 @@ fn read_data_from<R: BufRead>(reader: R, column: usize, sig_figs: Option<f64>) -
     lines
 }
 
+fn scale_per_sig_figs(value: f64, sig_figs: Option<f64>) -> f64 {
+    match sig_figs {
+        Some(s) => {
+            let a: f64 = value;
+            a / f64::powf(10., s)
+        },
+        None => value,
+    }
+}
+
 /// Prints simple histographic information to STDOUT
-fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>) -> Result<(), std::io::Error> {
+fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>, sig_figs: Option<f64>) -> Result<(), std::io::Error> {
+
     writer.write_all(
         format!(
-            "Samples: {0: >7}\n\
-            Max:  {1: >10.2}\n\
-            Min:  {2: >10.2}\n\
-            Mean: {3: >10.2}\n\
-            SD:   {4: >10.2}\n",
+            "Samples:  {0: >10.2}\n\
+            Max:      {1: >10.2}\n\
+            Min:      {2: >10.2}\n\
+            Mean:     {3: >10.2}\n\
+            SD:       {4: >10.2}\n",
             hist.len(),
-            hist.highest_equivalent(hist.value_at_percentile(100.)),
-            hist.lowest_equivalent(hist.value_at_percentile(0.)),
-            hist.mean(),
-            hist.stdev()
+            scale_per_sig_figs(hist.highest_equivalent(hist.value_at_percentile(100.)) as f64, sig_figs),
+            scale_per_sig_figs(hist.lowest_equivalent(hist.value_at_percentile(0.)) as f64, sig_figs),
+            scale_per_sig_figs(hist.mean(), sig_figs),
+            scale_per_sig_figs(hist.stdev(), sig_figs)
         )
         .as_ref(),
     )?;
 
-    if (hist.mean() + 3. * hist.stdev()) <= hist.max() as f64 {
+    let outliers_above = hist.mean() + 3. * hist.stdev();
+    let outliers_below = hist.mean() - 3. * hist.stdev();
+
+    if outliers_above <= hist.max() as f64 {
         writer.write_all(
             format!(
-                "Outlier(s) >= {0: >10.2}\n",
-                hist.mean() + 3. * hist.stdev()
+                "Outlier(s) >= {0: >5.2}\n",
+                outliers_above
             )
             .as_ref(),
         )?;
     }
-    if (hist.mean() - 3. * hist.stdev()) >= hist.min() as f64 {
+    if outliers_below >= hist.min() as f64 {
         writer.write_all(
             format!(
-                "Outlier(s) <= {0: >10.2}\n",
-                hist.mean() + 3. * hist.stdev()
+                "Outlier(s) <= {0: >5.2}\n",
+                outliers_below
             )
             .as_ref(),
         )?;
@@ -247,21 +269,16 @@ fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>) -> Result<(), 
 /// from a `HistogramIterator` which is returned as a vector of `String`s.
 fn construct_percentiles<I: PickyIterator<u64>>(
     hist: &mut HistogramIterator<u64, I>,
-    upper_bound: u64,
-    lower_bound: u64,
-    max: u64,
-    min: u64,
-    bar_length: f64,
-    sig_figs: Option<f64>
+    app: &App
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     //for v in hist.iter_linear(resolution) {
     for v in hist {
-        if lower_bound as f64 <= v.percentile()
+        if app.lower as f64 <= v.percentile()
             && v.count_since_last_iteration() != 0
-            && v.percentile() <= upper_bound as f64
+            && v.percentile() <= app.upper as f64
         {
-            let deci_places: usize = match sig_figs {
+            let deci_places: usize = match app.sig_figs {
                 Some(s) => s as usize,
                 None => 0,
             };
@@ -270,7 +287,7 @@ fn construct_percentiles<I: PickyIterator<u64>>(
                 "{1: >6.2} {2: >10.0$} {3: >10} {4}",
                 deci_places,
                 v.percentile(),
-                match sig_figs {
+                match app.sig_figs {
                     Some(s) => {
                         let a: f64 = v.value_iterated_to() as f64;
                         a / f64::powf(10., s)
@@ -278,7 +295,7 @@ fn construct_percentiles<I: PickyIterator<u64>>(
                     None => v.value_iterated_to() as f64,
                 },
                 v.count_since_last_iteration(),
-                bar_string(v.count_since_last_iteration(), max, min, bar_length)
+                bar_string(v.count_since_last_iteration(), app.max_count, app.min_count, app.bar_length)
             ));
         }
     }
