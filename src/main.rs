@@ -323,7 +323,7 @@ fn write_percentiles_to<W: Write>(
     no_info: bool,
 ) -> Result<(), std::io::Error> {
     if !no_info {
-        writer.write_all(format!("Percentile  bucket      count\n").as_ref())?;
+        writer.write_all(format!("Percentile  Bucket      Count\n").as_ref())?;
     }
     let line_count = if percentiles.len() < max_lines {
         percentiles.len()
