@@ -248,7 +248,7 @@ fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>, sig_figs: Opti
         writer.write_all(
             format!(
                 "Outlier(s) >= {0: >5.2}\n",
-                outliers_above
+                scale_per_sig_figs(outliers_above, sig_figs)
             )
             .as_ref(),
         )?;
@@ -257,7 +257,7 @@ fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>, sig_figs: Opti
         writer.write_all(
             format!(
                 "Outlier(s) <= {0: >5.2}\n",
-                outliers_below
+                scale_per_sig_figs(outliers_below, sig_figs)
             )
             .as_ref(),
         )?;
