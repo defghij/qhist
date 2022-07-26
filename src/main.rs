@@ -72,8 +72,19 @@ struct Opt {
     /// will be converted to `1.13 * 10^2 = 113` and processed. When output it will be reconverted
     /// to `113 * 10^2 = 1.13`. This is because the underlying library for creating the histogram
     /// does not suppor floating point values.
-    #[structopt(short, long)]
+    #[structopt(long)]
     sig_figs: Option<f64>,
+
+    /// The scale is used to re-center signed values around an unsigned center. Make
+    /// this greater than, but near, the largest absolutely value in the data set.
+    /// 
+    /// The internal histogram library stores values as u64. In order to process signed values
+    /// they need to be recentered about an unsigned value such that all data points are greater
+    /// than zero.
+    #[structopt(long, default_value="0")]
+    scale: f64
+
+
 }
 
 struct App {
@@ -85,7 +96,8 @@ struct App {
     max_lines: usize,
     no_info: bool,
     bar_length: f64,
-    sig_figs: Option<f64>
+    sig_figs: Option<f64>,
+    scale: f64
 }
 
 fn main() -> Result<(), std::io::Error> {
@@ -116,11 +128,12 @@ fn main() -> Result<(), std::io::Error> {
         max_lines: args.max_lines, 
         no_info: args.no_info,
         bar_length: bar_length, 
-        sig_figs: args.sig_figs 
+        sig_figs: args.sig_figs,
+        scale: args.scale
     };
 
     // Read in data
-    let lines: Vec<u64>;
+    let lines: Vec<f64>;
     if args.input == None {
         let stdin = std::io::stdin();
         let stdin = stdin.lock();
@@ -135,12 +148,12 @@ fn main() -> Result<(), std::io::Error> {
     let mut hist = Histogram::<u64>::new(3).expect("Unable to create histogram");
 
     for val in lines.iter() {
-        hist.record(*val)
+        hist.record(*val as u64)
             .expect("Value added to histogram is out of range");
-        if hist.count_at(*val) > app.max_count {
-            app.max_count = hist.count_at(*val);
-        } else if hist.count_at(*val) < app.min_count {
-            app.min_count = hist.count_at(*val);
+        if hist.count_at(*val as u64) > app.max_count {
+            app.max_count = hist.count_at(*val as u64);
+        } else if hist.count_at(*val as u64) < app.min_count {
+            app.min_count = hist.count_at(*val as u64);
         }
     }
 
@@ -149,7 +162,7 @@ fn main() -> Result<(), std::io::Error> {
     let mut stdout = stdout.lock();
 
     if !args.no_info {
-        write_info_to(&mut stdout, &hist, app.sig_figs)?;
+        write_info_to(&mut stdout, &hist, &app)?;
     }
 
     if !args.no_percentiles {
@@ -171,8 +184,8 @@ fn main() -> Result<(), std::io::Error> {
 }
 
 /// Returns a vector containing the data pointed to by column and reader.
-fn read_data_from<R: BufRead>(reader: R, app: &App) -> Vec<u64> {
-    let lines: Vec<u64> = reader
+fn read_data_from<R: BufRead>(reader: R, app: &App) -> Vec<f64> {
+    let lines: Vec<f64> = reader
         .lines()
         .map(|line| {
             let l = line.unwrap();
@@ -195,16 +208,17 @@ fn read_data_from<R: BufRead>(reader: R, app: &App) -> Vec<u64> {
                         )
                         .as_ref()
                     ) as f64;
-                    (a * f64::powf(10., s)) as u64
+                    a * f64::powf(10., s) + app.scale
                 },
                 None => {
-                    l[app.column].to_owned().parse::<u64>().expect(
+                    let a: f64 = l[app.column].to_owned().parse::<f64>().expect(
                         format!(
                             "Value ({0:#?}) at column {1} was not parsable to an integer!",
                             l[app.column], app.column
                         )
                         .as_ref(),
-                    )
+                    );
+                    a + app.scale
                 }
             }
         })
@@ -223,7 +237,7 @@ fn scale_per_sig_figs(value: f64, sig_figs: Option<f64>) -> f64 {
 }
 
 /// Prints simple histographic information to STDOUT
-fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>, sig_figs: Option<f64>) -> Result<(), std::io::Error> {
+fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>, app: &App) -> Result<(), std::io::Error> {
 
     writer.write_all(
         format!(
@@ -233,35 +247,14 @@ fn write_info_to<W: Write>(writer: &mut W, hist: &Histogram<u64>, sig_figs: Opti
             Mean:     {3: >10.2}\n\
             SD:       {4: >10.2}\n",
             hist.len(),
-            scale_per_sig_figs(hist.highest_equivalent(hist.value_at_percentile(100.)) as f64, sig_figs),
-            scale_per_sig_figs(hist.lowest_equivalent(hist.value_at_percentile(0.)) as f64, sig_figs),
-            scale_per_sig_figs(hist.mean(), sig_figs),
-            scale_per_sig_figs(hist.stdev(), sig_figs)
+            scale_per_sig_figs(hist.highest_equivalent(hist.value_at_percentile(100.)) as f64, app.sig_figs) - app.scale,
+            scale_per_sig_figs(hist.lowest_equivalent(hist.value_at_percentile(0.)) as f64, app.sig_figs) - app.scale,
+            scale_per_sig_figs(hist.mean(), app.sig_figs) - app.scale,
+            scale_per_sig_figs(hist.stdev(), app.sig_figs)
         )
         .as_ref(),
     )?;
 
-    let outliers_above = hist.mean() + 3. * hist.stdev();
-    let outliers_below = hist.mean() - 3. * hist.stdev();
-
-    if outliers_above <= hist.max() as f64 {
-        writer.write_all(
-            format!(
-                "Outlier(s) >= {0: >5.2}\n",
-                scale_per_sig_figs(outliers_above, sig_figs)
-            )
-            .as_ref(),
-        )?;
-    }
-    if outliers_below >= hist.min() as f64 {
-        writer.write_all(
-            format!(
-                "Outlier(s) <= {0: >5.2}\n",
-                scale_per_sig_figs(outliers_below, sig_figs)
-            )
-            .as_ref(),
-        )?;
-    }
     Ok(())
 }
 
@@ -290,9 +283,9 @@ fn construct_percentiles<I: PickyIterator<u64>>(
                 match app.sig_figs {
                     Some(s) => {
                         let a: f64 = v.value_iterated_to() as f64;
-                        a / f64::powf(10., s)
+                        a / f64::powf(10., s) - app.scale
                     },
-                    None => v.value_iterated_to() as f64,
+                    None => v.value_iterated_to() as f64 - app.scale,
                 },
                 v.count_since_last_iteration(),
                 bar_string(v.count_since_last_iteration(), app.max_count, app.min_count, app.bar_length)
