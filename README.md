@@ -1,7 +1,7 @@
 # General
 This program is used to get quick, and simple, statistical information on a data set. Specifically, it is desiged to work on columnar data such a series of numbers separated by a new line.
 
-In files which have multiple column delimited by any number of spaces such as the following:
+In files which have multiple columns delimited by any number of spaces such as the following:
 
 ```
 ...
@@ -109,9 +109,11 @@ When the data containts floating point values, such as column two in the example
 `qhist --sig-figs 1 -c 1 -i /path/to/columnar_data`
 
 The second method is using `stdin`. 
+
 `cat /path/to_columnar_data | qhist --sig-figs 1 -c 1`
 
 This is especially useful if the data contains time or temperature like data with units.
+
 `cat /path/to/columnar_data | cut -c 19-20 | qhist`
 
 Note that the default column is 0 so by applying `cut` to the data to remove the units we can run `qhist` over the time data in the above columnar data.
